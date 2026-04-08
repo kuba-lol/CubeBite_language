@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+import sys, os, re, subprocess
+
+def build_and_run(source_file):
+    if not os.path.exists(source_file): return
+    if os.path.exists("/tmp/c_app"): os.remove("/tmp/c_app")
+
+    with open(source_file, 'r') as f:
+        code = f.read()
+
+    s = re.search(r':startcube(.*)', code, re.DOTALL)
+    body = s.group(1) if s else ""
+
+    cpp = [
+        "#include <iostream>", "#include <string>", "#include <map>", "#include <thread>",
+        "#include <chrono>", "#include <termios.h>", "#include <unistd.h>", "#include <fcntl.h>",
+        "#include <random>", "#include <fstream>", "#include <filesystem>",
+        "namespace fs = std::filesystem; std::map<std::string, std::string> vars;",
+        "int getch_nowait() { struct termios oldt, newt; int ch; int oldf = fcntl(STDIN_FILENO, F_GETFL, 0); fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK); tcgetattr(STDIN_FILENO, &oldt); newt = oldt; newt.c_lflag &= ~(ICANON | ECHO); tcsetattr(STDIN_FILENO, TCSANOW, &newt); ch = getchar(); tcsetattr(STDIN_FILENO, TCSANOW, &oldt); fcntl(STDIN_FILENO, F_SETFL, oldf); return ch; }",
+        "int main() {"
+    ]
+
+    lines = [l.strip() for l in body.split(';') if l.strip()]
+    open_brackets = 0
+    repeat_counters = 0
+
+    for line in lines:
+        if "()repeat" in line:
+            r_m = re.search(r', (\d+)', line)
+            if r_m:
+                cpp.append(f'    for(int i{repeat_counters}=0; i{repeat_counters}<{r_m.group(1)}; i{repeat_counters}++) {{')
+                open_brackets += 1; repeat_counters += 1
+        elif "()runcmd" in line:
+            v_m = re.search(r'\(\s*"([^"]+)"\s*\)', line); s_m = re.search(r'"([^"]+)"', line)
+            if v_m: cpp.append(f'    system(vars["{v_m.group(1)}"].c_str());')
+            elif s_m: cpp.append(f'    system("{s_m.group(1)}");')
+        elif "if ()" in line and ";con" in line:
+            m = re.search(r'\(\s*"([^"]+)"\s*\)\s*;con\s*"([^"]+)"', line)
+            if m:
+                v_n, search_t = m.groups()
+                cpp.append(f'    if (vars["{v_n}"].find("{search_t}") != std::string::npos) {{')
+                open_brackets += 1
+        elif "()wrifil" in line:
+            m = re.search(r'"([^"]+)"\s*,\s*\(\s*"([^"]+)"\s*\)', line)
+            if m:
+                fname, vname = m.groups()
+                cpp.append(f'    {{ std::ofstream f("{fname}"); f << vars["{vname}"]; f.close(); }}')
+        elif "()clean, screen" in line:
+            cpp.append('    system("clear");')
+        elif "()exit" in line: cpp.append("    return 0;")
+        elif "()tinput" in line:
+            ti_m = re.search(r'\("([^"]+)"\)', line)
+            if ti_m: cpp.append(f'    {{ std::string in; std::getline(std::cin >> std::ws, in); vars["{ti_m.group(1)}"] = in; }}')
+        elif "()opapp" in line:
+            v_m = re.search(r'\(\s*"([^"]+)"\s*\)', line); s_m = re.search(r'"([^"]+)"', line)
+            if v_m: cpp.append(f'    system((vars["{v_m.group(1)}"] + " &").c_str());')
+            elif s_m: cpp.append(f'    system("{s_m.group(1)} &");')
+        elif "()opfil" in line:
+            v_m = re.search(r'\(\s*"([^"]+)"\s*\)', line); s_m = re.search(r'"([^"]+)"', line)
+            if v_m: cpp.append(f'    system(("xdg-open " + vars["{v_m.group(1)}"]).c_str());')
+            elif s_m: cpp.append(f'    system("xdg-open {s_m.group(1)}");')
+        elif "()say" in line:
+            vo = re.search(r'\(\s*"([^"]+)"\s*\)', line); to = re.search(r'"([^"]*)"', line)
+            if vo: cpp.append(f'    std::cout << vars["{vo.group(1)}"] << std::endl;')
+            elif to: cpp.append(f'    std::cout << "{to.group(1)}" << std::endl;')
+        elif "always" in line: cpp.append("    while(true) {"); open_brackets += 1
+        elif "()ifkey" in line:
+            km = re.search(r'"([^"]+)"', line); cpp.append(f'    if (getch_nowait() == \'{km.group(1)}\') {{'); open_brackets += 1
+        elif any(k in line for k in ["endalways", "endkey", "endil", "endpeat", "endcube"]):
+            if open_brackets > 0: cpp.append("    }"); open_brackets -= 1
+        elif re.match(r'^"([^"]+)"\s*,\s*(.*)$', line):
+            v_m = re.match(r'^"([^"]+)"\s*,\s*(.*)$', line)
+            n, v = v_m.groups()
+            if '"' not in v: v = f'"{v.strip()}"'
+            cpp.append(f'    vars["{n}"] = {v};')
+
+    for _ in range(open_brackets): cpp.append("    }")
+    cpp.append("    return 0; }")
+
+    with open("/tmp/t.cpp", "w") as f: f.write("\n".join(cpp))
+    subprocess.run(["g++", "-std=c++20", "/tmp/t.cpp", "-o", "/tmp/c_app"])
+    subprocess.run(["/tmp/c_app"])
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".cs#"):
+        build_and_run(sys.argv[1])
